@@ -7,6 +7,11 @@ import argparse
 from requests.exceptions import RequestException
 from collections import defaultdict
 
+# Mimic browser headers to reduce server discrepancies
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+}
+
 def normalize_fqdns(fqdns):
     normalized = set()
     for fqdn in fqdns:
@@ -40,22 +45,15 @@ def detect_dynamic_dns(fqdn):
     except socket.gaierror:
         return False
 
-def check_redirect(url):
-    try:
-        response = requests.head(url, allow_redirects=True, timeout=5)
-        if response.url != url:
-            return response.status_code, response.url
-    except RequestException:
-        pass
-    return None, None
-
-def grab_banner(fqdn, port):
+def grab_banner_and_status(fqdn, port):
     try:
         url = f"http://{fqdn}:{port}/"
         if port == 443:
             url = f"https://{fqdn}:{port}/"
-        response = requests.head(url, timeout=5)
-        return response.headers.get("Server", "Unknown"), response.status_code
+        response = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=5)
+        server = response.headers.get("Server", "Unknown")
+        status_code = response.status_code
+        return server, status_code
     except RequestException:
         return "No Response", None
 
@@ -64,7 +62,7 @@ def check_wordpress(fqdn, port):
     if port == 443:
         url = f"https://{fqdn}:{port}/wp-login.php"
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, headers=HEADERS, timeout=5)
         if response.status_code == 200:
             content = response.text.lower()
             if (
@@ -72,24 +70,24 @@ def check_wordpress(fqdn, port):
                 or "wp-includes" in content
                 or "https://wordpress.org" in content
             ):
-                return colored("WordPress detected!", "green"), response.status_code
-        return colored("No WordPress instance found.", "red"), response.status_code
+                return colored("WordPress detected!", "green")
+        return colored("No WordPress instance found.", "red")
     except RequestException:
-        return "No Response", None
+        return "No Response"
 
 def check_robots(fqdn, port):
     url = f"http://{fqdn}:{port}/robots.txt"
     if port == 443:
         url = f"https://{fqdn}:{port}/robots.txt"
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, headers=HEADERS, timeout=5)
         if response.status_code == 200:
             content = response.text.lower()
             if "user-agent:" in content or "disallow:" in content:
-                return colored("robots.txt found!", "green"), response.status_code
-        return colored("No robots.txt found.", "red"), response.status_code
+                return colored("robots.txt found!", "green")
+        return colored("No robots.txt found.", "red")
     except RequestException:
-        return "No Response", None
+        return "No Response"
 
 def main():
     parser = argparse.ArgumentParser(
@@ -108,10 +106,6 @@ def main():
     normalized_fqdns = normalize_fqdns(fqdns)
     ports = [int(p.strip()) for p in args.ports.split(",")]
 
-    if not args.wp and not args.robots:
-        print("Error: You must specify at least one check option (--wp or --robots).")
-        sys.exit(1)
-
     fqdn_to_ip = {fqdn: resolve_ip(fqdn) for fqdn in normalized_fqdns}
     grouped_fqdns = defaultdict(list)
 
@@ -122,30 +116,30 @@ def main():
     for ip, fqdns in grouped_fqdns.items():
         for fqdn in fqdns:
             for port in ports:
-                banner, status_code = grab_banner(fqdn, port)
-                if not status_code:  # Skip if no response
-                    continue
+                banner, status_code = grab_banner_and_status(fqdn, port)
+                if not status_code:
+                    continue  # Skip if no response
 
-                dynamic_dns = "Yes" if detect_dynamic_dns(fqdn) else "No"
-                result_line = f"{fqdn:<30} {port:<5} {status_code:<5} "
-                
-                # Highlight redirects in blue
-                if 300 <= status_code < 400:
-                    result_line += colored(str(status_code), "blue") + " "
-                
+                status_str = (
+                    colored(str(status_code), "light_blue")
+                    if 300 <= status_code < 400
+                    else str(status_code)
+                )
+
+                result_line = f"{fqdn:<30} {port:<5} {status_str:<10}"
+
                 if args.wp:
-                    wp_result, wp_code = check_wordpress(fqdn, port)
-                    result_line += f"{wp_result:<40} "
+                    wp_result = check_wordpress(fqdn, port)
+                    result_line += f"{wp_result:<40}"
 
                 if args.robots:
-                    robots_result, robots_code = check_robots(fqdn, port)
-                    result_line += f"{robots_result:<40} "
+                    robots_result = check_robots(fqdn, port)
+                    result_line += f"{robots_result:<40}"
 
-                result_line += f"{banner:<20} Dynamic DNS: {dynamic_dns}"
+                result_line += f"{banner:<20}"
                 results.append(result_line)
 
-        # Add a line break between groups of FQDNs sharing the same IP
-        results.append("")
+        results.append("")  # Add a blank line between IP groups
 
     print("\n".join(results))
 
