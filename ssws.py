@@ -7,7 +7,7 @@ import argparse
 from requests.exceptions import RequestException
 from collections import defaultdict
 
-# Mimic browser headers to reduce server discrepancies
+# Mimic browser headers to reduce discrepancies
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 }
@@ -45,49 +45,55 @@ def detect_dynamic_dns(fqdn):
     except socket.gaierror:
         return False
 
+def make_request(url):
+    """
+    Make a GET request to the given URL and return the response.
+    """
+    try:
+        response = requests.get(url, headers=HEADERS, allow_redirects=True, timeout=5)
+        return response
+    except RequestException:
+        return None
+
 def grab_banner_and_status(fqdn, port):
+    """
+    Perform a HEAD request to grab the banner and status code.
+    """
     try:
         url = f"http://{fqdn}:{port}/"
         if port == 443:
             url = f"https://{fqdn}:{port}/"
-        response = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=5)
+        response = requests.head(url, headers=HEADERS, allow_redirects=False, timeout=5)
         server = response.headers.get("Server", "Unknown")
         status_code = response.status_code
         return server, status_code
     except RequestException:
         return "No Response", None
 
-def check_wordpress(fqdn, port):
-    url = f"http://{fqdn}:{port}/wp-login.php"
+def check_file(fqdn, port, path):
+    """
+    Check for a specific file (e.g., /wp-login.php, /robots.txt) on the target server.
+    """
+    url = f"http://{fqdn}:{port}{path}"
     if port == 443:
-        url = f"https://{fqdn}:{port}/wp-login.php"
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=5)
-        if response.status_code == 200:
+        url = f"https://{fqdn}:{port}{path}"
+    response = make_request(url)
+    if response:
+        status_code = response.status_code
+        if status_code == 200 and path == "/robots.txt":
+            content = response.text.lower()
+            if "user-agent:" in content or "disallow:" in content:
+                return colored("robots.txt found!", "green"), status_code
+        elif status_code == 200 and path == "/wp-login.php":
             content = response.text.lower()
             if (
                 "username or email address" in content
                 or "wp-includes" in content
                 or "https://wordpress.org" in content
             ):
-                return colored("WordPress detected!", "green")
-        return colored("No WordPress instance found.", "red")
-    except RequestException:
-        return "No Response"
-
-def check_robots(fqdn, port):
-    url = f"http://{fqdn}:{port}/robots.txt"
-    if port == 443:
-        url = f"https://{fqdn}:{port}/robots.txt"
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=5)
-        if response.status_code == 200:
-            content = response.text.lower()
-            if "user-agent:" in content or "disallow:" in content:
-                return colored("robots.txt found!", "green")
-        return colored("No robots.txt found.", "red")
-    except RequestException:
-        return "No Response"
+                return colored("WordPress detected!", "green"), status_code
+        return colored(f"No {path} found.", "red"), status_code
+    return "No Response", None
 
 def main():
     parser = argparse.ArgumentParser(
@@ -117,8 +123,8 @@ def main():
         for fqdn in fqdns:
             for port in ports:
                 banner, status_code = grab_banner_and_status(fqdn, port)
-                if not status_code:
-                    continue  # Skip if no response
+                if not status_code:  # Include all responses (redirects, errors, etc.)
+                    continue
 
                 status_str = (
                     colored(str(status_code), "light_blue")
@@ -129,11 +135,11 @@ def main():
                 result_line = f"{fqdn:<30} {port:<5} {status_str:<10}"
 
                 if args.wp:
-                    wp_result = check_wordpress(fqdn, port)
+                    wp_result, wp_code = check_file(fqdn, port, "/wp-login.php")
                     result_line += f"{wp_result:<40}"
 
                 if args.robots:
-                    robots_result = check_robots(fqdn, port)
+                    robots_result, robots_code = check_file(fqdn, port, "/robots.txt")
                     result_line += f"{robots_result:<40}"
 
                 result_line += f"{banner:<20}"
