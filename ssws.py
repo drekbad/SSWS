@@ -33,22 +33,9 @@ def resolve_ip(fqdn):
     try:
         return socket.gethostbyname(fqdn)
     except socket.gaierror:
-        return None
-
-def detect_dynamic_dns(fqdn):
-    try:
-        ips = set()
-        for _ in range(3):  # Resolve the IP 3 times with a small delay
-            ips.add(socket.gethostbyname(fqdn))
-            time.sleep(1)
-        return len(ips) > 1
-    except socket.gaierror:
-        return False
+        return "N/A"
 
 def make_request(url):
-    """
-    Make a GET request to the given URL and return the response.
-    """
     try:
         response = requests.get(url, headers=HEADERS, allow_redirects=True, timeout=5)
         return response
@@ -56,9 +43,6 @@ def make_request(url):
         return None
 
 def grab_banner_and_status(fqdn, port):
-    """
-    Perform a HEAD request to grab the banner and status code.
-    """
     try:
         url = f"http://{fqdn}:{port}/"
         if port == 443:
@@ -71,9 +55,6 @@ def grab_banner_and_status(fqdn, port):
         return "No Response", None
 
 def check_file(fqdn, port, path):
-    """
-    Check for a specific file (e.g., /wp-login.php, /robots.txt) on the target server.
-    """
     url = f"http://{fqdn}:{port}{path}"
     if port == 443:
         url = f"https://{fqdn}:{port}{path}"
@@ -83,7 +64,7 @@ def check_file(fqdn, port, path):
         if status_code == 200 and path == "/robots.txt":
             content = response.text.lower()
             if "user-agent:" in content or "disallow:" in content:
-                return colored("robots.txt found!", "green"), status_code
+                return "robots.txt found!", status_code
         elif status_code == 200 and path == "/wp-login.php":
             content = response.text.lower()
             if (
@@ -91,8 +72,8 @@ def check_file(fqdn, port, path):
                 or "wp-includes" in content
                 or "https://wordpress.org" in content
             ):
-                return colored("WordPress detected!", "green"), status_code
-        return colored(f"No {path} found.", "red"), status_code
+                return "WordPress detected!", status_code
+        return f"No {path} found.", status_code
     return "No Response", None
 
 def main():
@@ -113,41 +94,33 @@ def main():
     ports = [int(p.strip()) for p in args.ports.split(",")]
 
     fqdn_to_ip = {fqdn: resolve_ip(fqdn) for fqdn in normalized_fqdns}
-    grouped_fqdns = defaultdict(list)
+
+    # Print header row
+    print(f"{'FQDN':<30} {'IP':<15} {'Port':<5} {'Code':<6} {'Result':<40} {'Server':<20}")
 
     for fqdn, ip in fqdn_to_ip.items():
-        grouped_fqdns[ip].append(fqdn)
+        for port in ports:
+            banner, status_code = grab_banner_and_status(fqdn, port)
+            if not status_code:
+                continue
 
-    results = []
-    for ip, fqdns in grouped_fqdns.items():
-        for fqdn in fqdns:
-            for port in ports:
-                banner, status_code = grab_banner_and_status(fqdn, port)
-                if not status_code:  # Include all responses (redirects, errors, etc.)
-                    continue
+            # Highlight redirects (3xx) in orange
+            status_str = (
+                colored(str(status_code), "yellow") if 300 <= status_code < 400 else str(status_code)
+            )
 
-                status_str = (
-                    colored(str(status_code), "light_blue")
-                    if 300 <= status_code < 400
-                    else str(status_code)
-                )
+            result_line = f"{fqdn:<30} {ip:<15} {port:<5} {status_str:<6}"
 
-                result_line = f"{fqdn:<30} {port:<5} {status_str:<10}"
+            if args.wp:
+                wp_result, wp_code = check_file(fqdn, port, "/wp-login.php")
+                result_line += f"{wp_result:<40}"
 
-                if args.wp:
-                    wp_result, wp_code = check_file(fqdn, port, "/wp-login.php")
-                    result_line += f"{wp_result:<40}"
+            if args.robots:
+                robots_result, robots_code = check_file(fqdn, port, "/robots.txt")
+                result_line += f"{robots_result:<40}"
 
-                if args.robots:
-                    robots_result, robots_code = check_file(fqdn, port, "/robots.txt")
-                    result_line += f"{robots_result:<40}"
-
-                result_line += f"{banner:<20}"
-                results.append(result_line)
-
-        results.append("")  # Add a blank line between IP groups
-
-    print("\n".join(results))
+            result_line += f"{banner:<20}"
+            print(result_line)
 
 if __name__ == "__main__":
     main()
